@@ -56,6 +56,7 @@ export type CustomErrorParams = Partial<util.Omit<ZodCustomIssue, "code">>;
 export interface ZodTypeDef {
   errorMap?: ZodErrorMap;
   description?: string;
+  collectionId?: string;
 }
 
 class ParseInputLazyPath implements ParseInput {
@@ -92,10 +93,10 @@ const handleResult = <Input, Output>(
   ctx: ParseContext,
   result: SyncParseReturnType<Output>
 ):
-  | { success: true; data: Output }
+  | { success: true; data: Output, collections?: Record<string, any[]> }
   | { success: false; error: ZodError<Input> } => {
   if (isValid(result)) {
-    return { success: true, data: result.value };
+    return { success: true, data: result.value, collections: result.collections };
   } else {
     if (!ctx.common.issues.length) {
       throw new Error("Validation failed but no issues detected.");
@@ -153,6 +154,7 @@ function processCreateParams(params: RawCreateParams): ProcessedCreateParams {
 export type SafeParseSuccess<Output> = {
   success: true;
   data: Output;
+  collections?: Record<string, any[]>;
   error?: never;
 };
 export type SafeParseError<Input> = {
@@ -177,6 +179,10 @@ export abstract class ZodType<
 
   get description() {
     return this._def.description;
+  }
+
+  get collectionId() {
+    return this._def.collectionId;
   }
 
   abstract _parse(input: ParseInput): ParseReturnType<Output>;
@@ -241,6 +247,17 @@ export abstract class ZodType<
     throw result.error;
   }
 
+  parseAndCollect(data: unknown, params?: Partial<ParseParams>): { data: Output, collections?: Record<string, any[]> } {
+    const result = this.safeParse(data, params);
+    if (result.success) {
+      return {
+        data: result.data,
+        collections: result.collections,
+      };
+    }
+    throw result.error;
+  }
+
   safeParse(
     data: unknown,
     params?: Partial<ParseParams>
@@ -268,6 +285,20 @@ export abstract class ZodType<
   ): Promise<Output> {
     const result = await this.safeParseAsync(data, params);
     if (result.success) return result.data;
+    throw result.error;
+  }
+
+  async parseAndCollectAsync(
+    data: unknown,
+    params?: Partial<ParseParams>
+  ): Promise<{ data: Output, collections?: Record<string, any[]> }> {
+    const result = await this.safeParseAsync(data, params);
+    if (result.success) {
+      return {
+        data: result.data,
+        collections: result.collections,
+      };
+    };
     throw result.error;
   }
 
@@ -417,6 +448,7 @@ export abstract class ZodType<
     this.brand = this.brand.bind(this);
     this.default = this.default.bind(this);
     this.catch = this.catch.bind(this);
+    this.collect = this.collect.bind(this);
     this.describe = this.describe.bind(this);
     this.pipe = this.pipe.bind(this);
     this.readonly = this.readonly.bind(this);
@@ -494,6 +526,14 @@ export abstract class ZodType<
       catchValue: catchValueFunc,
       typeName: ZodFirstPartyTypeKind.ZodCatch,
     }) as any;
+  }
+
+  collect(collectionId: string): this {
+    const This = (this as any).constructor;
+    return new This({
+      ...this._def,
+      collectionId,
+    });
   }
 
   describe(description: string): this {
@@ -2458,6 +2498,7 @@ export class ZodObject<
     const pairs: {
       key: ParseReturnType<any>;
       value: ParseReturnType<any>;
+      collectionId?: string;
       alwaysSet?: boolean;
     }[] = [];
     for (const key of shapeKeys) {
@@ -2468,6 +2509,7 @@ export class ZodObject<
         value: keyValidator._parse(
           new ParseInputLazyPath(ctx, value, ctx.path, key)
         ),
+        collectionId: keyValidator.collectionId,
         alwaysSet: key in ctx.data,
       });
     }
@@ -2510,6 +2552,8 @@ export class ZodObject<
       }
     }
 
+    const collections: Record<string, any[]> = {};
+
     if (ctx.common.async) {
       return Promise.resolve()
         .then(async () => {
@@ -2522,14 +2566,74 @@ export class ZodObject<
               value,
               alwaysSet: pair.alwaysSet,
             });
+            if (value.status === 'valid' && pair.collectionId) {
+              if (!collections[pair.collectionId]) {
+                collections[pair.collectionId] = [];
+              }
+              if (value.collections) {
+                objectUtil.extendCollections(collections, value.collections);
+              } else if (Array.isArray(value.value)) {
+                collections[pair.collectionId].push(
+                  ...value.value.map(v => ({
+                    value: v,
+                    ctx: ctx.data,
+                  })),
+                );
+              } else {
+                collections[pair.collectionId].push({
+                  value: value.value,
+                  ctx: ctx.data,
+                });
+              }
+            }
           }
           return syncPairs;
         })
         .then((syncPairs) => {
-          return ParseStatus.mergeObjectSync(status, syncPairs);
+          const mergeResult = ParseStatus.mergeObjectSync(status, syncPairs);
+          if (mergeResult.status === 'valid') {
+            return {
+              ...mergeResult,
+              collections,
+            }
+          }
+          return mergeResult;
         });
     } else {
-      return ParseStatus.mergeObjectSync(status, pairs as any);
+      for (const pair of pairs) {
+        const value = pair.value;
+        if (!(value instanceof Promise)) {
+          if (value.status === 'valid' && pair.collectionId) {
+            if (!collections[pair.collectionId]) {
+              collections[pair.collectionId] = [];
+            }
+            if (value.collections) {
+              objectUtil.extendCollections(collections, value.collections);
+            } else if (Array.isArray(value.value)) {
+              collections[pair.collectionId].push(
+                ...value.value.map(v => ({
+                  value: v,
+                  ctx: ctx.data,
+                })),
+              );
+            } else {
+              collections[pair.collectionId].push({
+                value: value.value,
+                ctx: ctx.data,
+              });
+            }
+          }
+        }
+      }
+
+      const mergeResult = ParseStatus.mergeObjectSync(status, pairs as any);
+      if (mergeResult.status === 'valid') {
+        return {
+          ...mergeResult,
+          collections,
+        }
+      }
+      return mergeResult;
     }
   }
 

@@ -136,6 +136,18 @@ export namespace objectUtil {
   } & {
     [K in keyof B]: B[K];
   };
+
+  export const extendCollections = <A extends Record<string, any[]>, B extends Record<string, any[]>>(first: A, second: B) => {
+    for (const key in second) {
+      if (first[key]) {
+        // @ts-ignore
+        first[key] = first[key].concat(second[key]);
+      } else {
+        // @ts-ignore
+        first[key] = second[key];
+      }
+    }
+  }
 }
 
 export const ZodParsedType = util.arrayToEnum([
@@ -218,3 +230,5 @@ export const getParsedType = (data: any): ZodParsedType => {
       return ZodParsedType.unknown;
   }
 };
+
+

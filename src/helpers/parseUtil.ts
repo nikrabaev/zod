@@ -171,7 +171,7 @@ export const INVALID: INVALID = Object.freeze({
 export type DIRTY<T> = { status: "dirty"; value: T };
 export const DIRTY = <T>(value: T): DIRTY<T> => ({ status: "dirty", value });
 
-export type OK<T> = { status: "valid"; value: T };
+export type OK<T> = { status: "valid"; value: T, collections?: Record<string, any[]> };
 export const OK = <T>(value: T): OK<T> => ({ status: "valid", value });
 
 export type SyncParseReturnType<T = any> = OK<T> | DIRTY<T> | INVALID;
